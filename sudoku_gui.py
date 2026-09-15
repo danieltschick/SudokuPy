@@ -22,7 +22,7 @@ THIN_LINE = "#C9C4B8"
 GIVEN_COLOR = "#1F2937"
 USER_COLOR = "#2563EB"
 ERROR_COLOR = "#DC2626"
-SELECT_COLOR = "#DCE8FF"
+SELECT_COLOR = "#FBBF24"
 PEER_COLOR = "#EFF4FF"
 SAME_NUM_COLOR = "#FDE68A"
 BTN_COLOR = "#2563EB"
@@ -46,12 +46,13 @@ class SudokuGUI:
         self.notes = {}  # (r,c) -> set of candidate numbers
         self.notes_mode = False
         self.selected = None
+        self.pending_number = None  # número "armado" aguardando clique numa célula
         self.start_time = None
         self.timer_running = False
         self.hints_used = 0
         self.mistakes = 0
 
-        self.title_font = tkfont.Font(family="Segoe UI", size=20, weight="bold")
+        self.title_font = tkfont.Font(family="Segoe UI", size=18, weight="bold")
         self.label_font = tkfont.Font(family="Segoe UI", size=11)
         self.cell_font = tkfont.Font(family="Segoe UI", size=20)
         self.note_font = tkfont.Font(family="Segoe UI", size=8)
@@ -63,73 +64,90 @@ class SudokuGUI:
 
     # ---------------- Layout ----------------
     def _build_layout(self):
-        header = tk.Frame(self.root, bg=BG_COLOR)
-        header.pack(pady=(16, 4))
+        main = tk.Frame(self.root, bg=BG_COLOR)
+        main.pack(padx=16, pady=16)
 
-        tk.Label(header, text="Sudoku Clássico", font=self.title_font,
-                 bg=BG_COLOR, fg="#1F2937").pack()
+        # ---------- Coluna esquerda: título + tabuleiro ----------
+        left = tk.Frame(main, bg=BG_COLOR)
+        left.grid(row=0, column=0, sticky="n")
 
-        info_frame = tk.Frame(self.root, bg=BG_COLOR)
-        info_frame.pack(pady=(4, 8))
+        tk.Label(left, text="Sudoku Clássico", font=self.title_font,
+                 bg=BG_COLOR, fg="#1F2937").pack(anchor="w", pady=(0, 8))
 
-        self.timer_label = tk.Label(info_frame, text="⏱ 00:00", font=self.label_font,
-                                     bg=BG_COLOR, fg="#374151")
-        self.timer_label.grid(row=0, column=0, padx=10)
-
-        self.mistakes_label = tk.Label(info_frame, text="Erros: 0", font=self.label_font,
-                                        bg=BG_COLOR, fg="#374151")
-        self.mistakes_label.grid(row=0, column=1, padx=10)
-
-        self.hints_label = tk.Label(info_frame, text="Dicas: 0", font=self.label_font,
-                                     bg=BG_COLOR, fg="#374151")
-        self.hints_label.grid(row=0, column=2, padx=10)
-
-        self.diff_var = tk.StringVar(value=self.difficulty)
-        diff_menu = tk.OptionMenu(info_frame, self.diff_var,
-                                   "Fácil", "Médio", "Difícil", "Especialista",
-                                   command=lambda d: self.new_game(d))
-        diff_menu.config(font=self.label_font, bg="white", relief="flat", highlightthickness=1)
-        diff_menu.grid(row=0, column=3, padx=10)
-
-        # Grid canvas
         size = CELL_SIZE * 9 + 4
-        self.canvas = tk.Canvas(self.root, width=size, height=size,
+        self.canvas = tk.Canvas(left, width=size, height=size,
                                  bg=GRID_BG, highlightthickness=0)
-        self.canvas.pack(padx=16, pady=4)
+        self.canvas.pack()
         self.canvas.bind("<Button-1>", self._on_click)
         self.root.bind("<Key>", self._on_key)
 
-        # Number pad + controls
-        pad_frame = tk.Frame(self.root, bg=BG_COLOR)
-        pad_frame.pack(pady=(8, 4))
+        # ---------- Coluna direita: barra lateral ----------
+        sidebar = tk.Frame(main, bg=BG_COLOR, width=210)
+        sidebar.grid(row=0, column=1, sticky="n", padx=(20, 0))
+        sidebar.grid_propagate(False)
+
+        # Dificuldade
+        tk.Label(sidebar, text="Dificuldade", font=self.label_font,
+                 bg=BG_COLOR, fg="#374151").pack(anchor="w")
+        self.diff_var = tk.StringVar(value=self.difficulty)
+        diff_menu = tk.OptionMenu(sidebar, self.diff_var,
+                                   "Fácil", "Médio", "Difícil", "Especialista",
+                                   command=lambda d: self.new_game(d))
+        diff_menu.config(font=self.label_font, bg="white", relief="flat",
+                          highlightthickness=1, anchor="w")
+        diff_menu.pack(fill="x", pady=(2, 12))
+
+        # Info: timer, erros, dicas
+        info_frame = tk.Frame(sidebar, bg=BG_COLOR)
+        info_frame.pack(fill="x", pady=(0, 12))
+
+        self.timer_label = tk.Label(info_frame, text="⏱ 00:00", font=self.label_font,
+                                     bg=BG_COLOR, fg="#374151", anchor="w")
+        self.timer_label.pack(fill="x", pady=1)
+
+        self.mistakes_label = tk.Label(info_frame, text="Erros: 0", font=self.label_font,
+                                        bg=BG_COLOR, fg="#374151", anchor="w")
+        self.mistakes_label.pack(fill="x", pady=1)
+
+        self.hints_label = tk.Label(info_frame, text="Dicas: 0", font=self.label_font,
+                                     bg=BG_COLOR, fg="#374151", anchor="w")
+        self.hints_label.pack(fill="x", pady=1)
+
+        # Teclado numérico (grid 3x3 + apagar)
+        tk.Label(sidebar, text="Números", font=self.label_font,
+                 bg=BG_COLOR, fg="#374151").pack(anchor="w")
+        pad_frame = tk.Frame(sidebar, bg=BG_COLOR)
+        pad_frame.pack(pady=(2, 12))
 
         for n in range(1, 10):
+            row, col = divmod(n - 1, 3)
             b = tk.Button(pad_frame, text=str(n), width=3, height=1, font=self.btn_font,
                           bg="white", fg="#1F2937", relief="flat", bd=1,
                           highlightbackground=THIN_LINE,
-                          command=lambda n=n: self._input_number(n))
-            b.grid(row=0, column=n - 1, padx=2, pady=2)
+                          command=lambda n=n: self._select_number(n))
+            b.grid(row=row, column=col, padx=2, pady=2)
 
-        erase_btn = tk.Button(pad_frame, text="⌫", width=3, height=1, font=self.btn_font,
+        erase_btn = tk.Button(pad_frame, text="⌫ Apagar", width=11, height=1, font=self.btn_font,
                                bg="white", fg="#1F2937", relief="flat", bd=1,
-                               command=lambda: self._input_number(0))
-        erase_btn.grid(row=0, column=9, padx=(8, 2), pady=2)
+                               command=lambda: self._select_number(0))
+        erase_btn.grid(row=3, column=0, columnspan=3, padx=2, pady=(6, 2), sticky="ew")
 
-        controls = tk.Frame(self.root, bg=BG_COLOR)
-        controls.pack(pady=(8, 16))
+        # Botões de controle (empilhados)
+        controls = tk.Frame(sidebar, bg=BG_COLOR)
+        controls.pack(fill="x")
 
         def make_btn(parent, text, cmd):
             btn = tk.Button(parent, text=text, font=self.btn_font, bg=BTN_COLOR, fg=BTN_TEXT,
                              activebackground=BTN_HOVER, activeforeground=BTN_TEXT,
-                             relief="flat", padx=14, pady=8, command=cmd, cursor="hand2")
+                             relief="flat", padx=10, pady=8, command=cmd, cursor="hand2")
             return btn
 
-        make_btn(controls, "Novo Jogo", lambda: self.new_game(self.diff_var.get())).grid(row=0, column=0, padx=6)
-        self.notes_btn = make_btn(controls, "Anotações: OFF", self._toggle_notes)
-        self.notes_btn.grid(row=0, column=1, padx=6)
-        make_btn(controls, "Dica", self._give_hint).grid(row=0, column=2, padx=6)
-        make_btn(controls, "Verificar", self._check_board).grid(row=0, column=3, padx=6)
-        make_btn(controls, "Resolver", self._solve_now).grid(row=0, column=4, padx=6)
+        make_btn(controls, "Novo Jogo (N)", lambda: self.new_game(self.diff_var.get())).pack(fill="x", pady=3)
+        self.notes_btn = make_btn(controls, "Anotações: OFF (A)", self._toggle_notes)
+        self.notes_btn.pack(fill="x", pady=3)
+        make_btn(controls, "Dica (D)", self._give_hint).pack(fill="x", pady=3)
+        make_btn(controls, "Reiniciar (R)", self._restart).pack(fill="x", pady=3)
+        make_btn(controls, "Solução (S)", self._solve_now).pack(fill="x", pady=3)
 
     # ---------------- Game setup ----------------
     def new_game(self, difficulty):
@@ -163,6 +181,7 @@ class SudokuGUI:
         self.user_board = [row[:] for row in self.puzzle]
         self.notes = {}
         self.selected = None
+        self.pending_number = None
         self.hints_used = 0
         self.mistakes = 0
         self.start_time = time.time()
@@ -193,18 +212,26 @@ class SudokuGUI:
             sel_r, sel_c = self.selected
             sel_val = self.user_board[sel_r][sel_c]
 
+        # Número em evidência: o pendente (recém teclado/clicado) tem prioridade;
+        # na ausência dele, usa o valor da célula selecionada (se houver).
+        highlight_val = self.pending_number if self.pending_number else (sel_val if sel_val != 0 else None)
+
         # cell backgrounds
         for r in range(9):
             for c in range(9):
                 x0, y0, x1, y1 = self._cell_coords(r, c)
                 color = GRID_BG
                 val = self.user_board[r][c]
+                is_selected_cell = self.selected and r == sel_r and c == sel_c
                 if self.selected:
-                    if r == sel_r and c == sel_c:
+                    if is_selected_cell:
                         color = SELECT_COLOR
                     elif r == sel_r or c == sel_c or (r // 3 == sel_r // 3 and c // 3 == sel_c // 3):
                         color = PEER_COLOR
-                    if sel_val != 0 and val == sel_val and not (r == sel_r and c == sel_c):
+                if highlight_val:
+                    if val == highlight_val and not is_selected_cell:
+                        color = SAME_NUM_COLOR
+                    elif val == 0 and highlight_val in self.notes.get((r, c), ()):
                         color = SAME_NUM_COLOR
                 self.canvas.create_rectangle(x0, y0, x1, y1, fill=color, outline="")
 
@@ -248,9 +275,27 @@ class SudokuGUI:
         r = event.y // CELL_SIZE
         if 0 <= r < 9 and 0 <= c < 9:
             self.selected = (r, c)
+            if self.pending_number is not None and not self.given_mask[r][c]:
+                self._apply_pending_at(r, c)
             self._draw_board()
 
+    # Teclas de atalho para os botões de ação (funcionam mesmo sem célula selecionada)
+    SHORTCUTS = {"n": "_shortcut_new_game", "a": "_toggle_notes", "d": "_give_hint",
+                 "r": "_restart", "s": "_solve_now"}
+
     def _on_key(self, event):
+        key = event.keysym.lower()
+        if key in self.SHORTCUTS:
+            getattr(self, self.SHORTCUTS[key])()
+            return
+
+        if event.char in "123456789":
+            self._select_number(int(event.char))
+            return
+        if event.keysym in ("BackSpace", "Delete"):
+            self._select_number(0)
+            return
+
         if not self.selected:
             return
         r, c = self.selected
@@ -259,38 +304,41 @@ class SudokuGUI:
             nr, nc = max(0, min(8, r + dr)), max(0, min(8, c + dc))
             self.selected = (nr, nc)
             self._draw_board()
-            return
-        if event.char in "123456789":
-            self._input_number(int(event.char))
-        elif event.keysym in ("BackSpace", "Delete"):
-            self._input_number(0)
 
-    def _input_number(self, n):
-        if not self.selected:
-            return
-        r, c = self.selected
-        if self.given_mask[r][c]:
+    def _shortcut_new_game(self):
+        self.new_game(self.diff_var.get())
+
+    def _select_number(self, n):
+        """Marca 'n' como o número pendente e o destaca no tabuleiro.
+        Nada é escrito até o usuário clicar numa célula."""
+        self.pending_number = n
+        self.selected = None # para de-selecione a celula
+        self._draw_board()
+
+    def _apply_pending_at(self, r, c):
+        """Aplica o número pendente na célula (r, c): valor ou anotação,
+        dependendo do modo Anotações estar ativo no momento do clique."""
+        n = self.pending_number
+        if n is None:
             return
 
         if self.notes_mode and n != 0:
             cand = self.notes.setdefault((r, c), set())
             if n in cand:
-                cand.remove(n)
+                cand.discard(n)
             else:
                 cand.add(n)
-            self._draw_board()
-            return
+        else:
+            prev = self.user_board[r][c]
+            self.user_board[r][c] = n
+            if n != 0:
+                self.notes.pop((r, c), None)
+                self._clear_peer_notes(r, c, n)
+                if n != self.solution[r][c] and prev != n:
+                    self.mistakes += 1
+                    self.mistakes_label.config(text=f"Erros: {self.mistakes}")
 
-        prev = self.user_board[r][c]
-        self.user_board[r][c] = n
-        if n != 0:
-            self.notes.pop((r, c), None)
-            self._clear_peer_notes(r, c, n)
-            if n != self.solution[r][c] and prev != n:
-                self.mistakes += 1
-                self.mistakes_label.config(text=f"Erros: {self.mistakes}")
-
-        self._draw_board()
+        # self.pending_number = None -- deve continuar com o mesmo numero "ativo" mesmo depois de escrever em uma celula
         self._check_win_silent()
 
     def _clear_peer_notes(self, r, c, n):
@@ -314,7 +362,7 @@ class SudokuGUI:
 
     def _toggle_notes(self):
         self.notes_mode = not self.notes_mode
-        self.notes_btn.config(text=f"Anotações: {'ON' if self.notes_mode else 'OFF'}",
+        self.notes_btn.config(text=f"Anotações: {'ON' if self.notes_mode else 'OFF'} (A)",
                                bg=("#059669" if self.notes_mode else BTN_COLOR))
 
     def _give_hint(self):
@@ -328,31 +376,23 @@ class SudokuGUI:
         self.user_board[r][c] = self.solution[r][c]
         self.notes.pop((r, c), None)
         self._clear_peer_notes(r, c, self.solution[r][c])
+        self.pending_number = None
         self.hints_used += 1
         self.hints_label.config(text=f"Dicas: {self.hints_used}")
         self._draw_board()
         self._check_win_silent()
 
-    def _check_board(self):
-        errors = 0
-        for r in range(9):
-            for c in range(9):
-                v = self.user_board[r][c]
-                if v != 0 and not self.given_mask[r][c] and v != self.solution[r][c]:
-                    errors += 1
-        if errors == 0:
-            filled = all(self.user_board[r][c] != 0 for r in range(9) for c in range(9))
-            if filled:
-                self._on_win()
-            else:
-                messagebox.showinfo("Verificação", "Até agora está tudo certo! Continue.")
-        else:
-            messagebox.showwarning("Verificação", f"Encontrado(s) {errors} número(s) incorreto(s).")
+    def _restart(self):
+        if messagebox.askyesno("Reiniciar", "Isso vai apagar tudo e recomeçar o mesmo jogo. Deseja continuar?"):
+            self.user_board = [row[:] for row in self.puzzle]
+            self.notes = {}
+            self._draw_board()
 
     def _solve_now(self):
         if messagebox.askyesno("Resolver", "Isso vai preencher a solução completa. Deseja continuar?"):
             self.user_board = [row[:] for row in self.solution]
             self.notes = {}
+            self.pending_number = None
             self.timer_running = False
             self._draw_board()
 
