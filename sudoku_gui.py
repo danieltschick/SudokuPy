@@ -275,7 +275,17 @@ class SudokuGUI:
         r = event.y // CELL_SIZE
         if 0 <= r < 9 and 0 <= c < 9:
             self.selected = (r, c)
-            if self.pending_number is not None and not self.given_mask[r][c]:
+            # Só aplica o número armado se a célula estiver vazia, ou se o
+            # armado for "Apagar" (0) — nesse caso pode limpar célula preenchida.
+            # Célula já preenchida + número armado != 0: o clique só seleciona,
+            # sem sobrescrever (evita apagar acertos sem querer e libera o
+            # clique pra navegação/Dica mesmo com um número armado).
+            can_apply = (
+                self.pending_number is not None
+                and not self.given_mask[r][c]
+                and (self.pending_number == 0 or self.user_board[r][c] == 0)
+            )
+            if can_apply:
                 self._apply_pending_at(r, c)
             self._draw_board()
 
@@ -405,6 +415,7 @@ class SudokuGUI:
         self.timer_running = False
         elapsed = int(time.time() - self.start_time)
         m, s = divmod(elapsed, 60)
+        self._draw_board()
         messagebox.showinfo("Parabéns!",
                              f"Você completou o Sudoku em {m:02d}:{s:02d}\n"
                              f"Erros: {self.mistakes} | Dicas usadas: {self.hints_used}")
