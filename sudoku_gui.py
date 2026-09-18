@@ -22,13 +22,18 @@ THIN_LINE = "#C9C4B8"
 GIVEN_COLOR = "#1F2937"
 USER_COLOR = "#2563EB"
 ERROR_COLOR = "#DC2626"
-SELECT_COLOR = "#FBBF24"
-PEER_COLOR = "#EFF4FF"
 SAME_NUM_COLOR = "#FDE68A"
+PEER_COLOR = "#EFF4FF"
+MODE_ON_COLOR = "#059669"
 BTN_COLOR = "#2563EB"
 BTN_TEXT = "#FFFFFF"
 BTN_HOVER = "#1D4ED8"
 CELL_SIZE = 58
+
+# Modos de interação (mutuamente exclusivos)
+MODE_WRITE = "write"      # clique escreve o número armado na célula
+MODE_NOTES = "notes"      # clique alterna o número armado como anotação
+MODE_HINT = "hint"        # clique revela a resposta correta da célula
 
 
 class SudokuGUI:
@@ -43,10 +48,10 @@ class SudokuGUI:
         self.solution = None
         self.given_mask = None
         self.user_board = None
-        self.notes = {}  # (r,c) -> set of candidate numbers
-        self.notes_mode = False
-        self.selected = None
-        self.pending_number = None  # número "armado" aguardando clique numa célula
+        self.notes = {}  # (r,c) -> set de números candidatos
+        self.mode = MODE_WRITE
+        self.pending_number = None  # número "armado" (usado nos modos Escrever/Anotação)
+        self.hover_cell = None  # (r, c) sob o cursor, para o destaque de linha/coluna/quadrante
         self.start_time = None
         self.timer_running = False
         self.hints_used = 0
@@ -79,6 +84,8 @@ class SudokuGUI:
                                  bg=GRID_BG, highlightthickness=0)
         self.canvas.pack()
         self.canvas.bind("<Button-1>", self._on_click)
+        self.canvas.bind("<Motion>", self._on_hover)
+        self.canvas.bind("<Leave>", self._on_hover_leave)
         self.root.bind("<Key>", self._on_key)
 
         # ---------- Coluna direita: barra lateral ----------
@@ -143,9 +150,10 @@ class SudokuGUI:
             return btn
 
         make_btn(controls, "Novo Jogo (N)", lambda: self.new_game(self.diff_var.get())).pack(fill="x", pady=3)
-        self.notes_btn = make_btn(controls, "Anotações: OFF (A)", self._toggle_notes)
+        self.notes_btn = make_btn(controls, "Anotações: OFF (A)", self._toggle_notes_mode)
         self.notes_btn.pack(fill="x", pady=3)
-        make_btn(controls, "Dica (D)", self._give_hint).pack(fill="x", pady=3)
+        self.hint_btn = make_btn(controls, "Dica: OFF (D)", self._toggle_hint_mode)
+        self.hint_btn.pack(fill="x", pady=3)
         make_btn(controls, "Reiniciar (R)", self._restart).pack(fill="x", pady=3)
         make_btn(controls, "Solução (S)", self._solve_now).pack(fill="x", pady=3)
 
@@ -180,8 +188,9 @@ class SudokuGUI:
         self.given_mask = [[self.puzzle[r][c] != 0 for c in range(9)] for r in range(9)]
         self.user_board = [row[:] for row in self.puzzle]
         self.notes = {}
-        self.selected = None
         self.pending_number = None
+        self.mode = MODE_WRITE
+        self._refresh_mode_buttons()
         self.hints_used = 0
         self.mistakes = 0
         self.start_time = time.time()
@@ -206,30 +215,24 @@ class SudokuGUI:
     def _draw_board(self):
         self.canvas.delete("all")
 
-        sel_r = sel_c = None
-        sel_val = 0
-        if self.selected:
-            sel_r, sel_c = self.selected
-            sel_val = self.user_board[sel_r][sel_c]
-
-        # Número em evidência: o pendente (recém teclado/clicado) tem prioridade;
-        # na ausência dele, usa o valor da célula selecionada (se houver).
-        highlight_val = self.pending_number if self.pending_number else (sel_val if sel_val != 0 else None)
+        # Número em evidência: o armado, só faz sentido destacar nos modos
+        # Escrever/Anotação (no modo Dica não há número armado relevante).
+        highlight_val = None
+        if self.mode != MODE_HINT and self.pending_number:
+            highlight_val = self.pending_number
 
         # cell backgrounds
+        hover_r, hover_c = self.hover_cell if self.hover_cell else (None, None)
         for r in range(9):
             for c in range(9):
                 x0, y0, x1, y1 = self._cell_coords(r, c)
                 color = GRID_BG
                 val = self.user_board[r][c]
-                is_selected_cell = self.selected and r == sel_r and c == sel_c
-                if self.selected:
-                    if is_selected_cell:
-                        color = SELECT_COLOR
-                    elif r == sel_r or c == sel_c or (r // 3 == sel_r // 3 and c // 3 == sel_c // 3):
-                        color = PEER_COLOR
+                if self.hover_cell and (r == hover_r or c == hover_c or
+                                         (r // 3 == hover_r // 3 and c // 3 == hover_c // 3)):
+                    color = PEER_COLOR
                 if highlight_val:
-                    if val == highlight_val and not is_selected_cell:
+                    if val == highlight_val:
                         color = SAME_NUM_COLOR
                     elif val == 0 and highlight_val in self.notes.get((r, c), ()):
                         color = SAME_NUM_COLOR
@@ -273,24 +276,40 @@ class SudokuGUI:
     def _on_click(self, event):
         c = event.x // CELL_SIZE
         r = event.y // CELL_SIZE
-        if 0 <= r < 9 and 0 <= c < 9:
-            self.selected = (r, c)
-            # Só aplica o número armado se a célula estiver vazia, ou se o
-            # armado for "Apagar" (0) — nesse caso pode limpar célula preenchida.
-            # Célula já preenchida + número armado != 0: o clique só seleciona,
-            # sem sobrescrever (evita apagar acertos sem querer e libera o
-            # clique pra navegação/Dica mesmo com um número armado).
-            can_apply = (
-                self.pending_number is not None
-                and not self.given_mask[r][c]
-                and (self.pending_number == 0 or self.user_board[r][c] == 0)
-            )
-            if can_apply:
-                self._apply_pending_at(r, c)
+        if not (0 <= r < 9 and 0 <= c < 9):
+            return
+        if self.given_mask[r][c]:
+            return  # célula de pista: não pode ser alterada em nenhum modo
+
+        if self.mode == MODE_HINT:
+            self._apply_hint_at(r, c)
+        elif self.mode == MODE_NOTES:
+            if self.pending_number:  # 0 (apagar) não faz sentido como anotação
+                self._toggle_note_at(r, c, self.pending_number)
+        else:  # MODE_WRITE
+            # Só escreve se a célula estiver vazia, ou se "Apagar" (0) estiver
+            # armado — nesse caso pode sempre limpar uma célula preenchida.
+            n = self.pending_number
+            if n is not None and (n == 0 or self.user_board[r][c] == 0):
+                self._write_value_at(r, c, n)
+
+        self._draw_board()
+
+    def _on_hover(self, event):
+        c = event.x // CELL_SIZE
+        r = event.y // CELL_SIZE
+        cell = (r, c) if (0 <= r < 9 and 0 <= c < 9) else None
+        if cell != self.hover_cell:
+            self.hover_cell = cell
             self._draw_board()
 
-    # Teclas de atalho para os botões de ação (funcionam mesmo sem célula selecionada)
-    SHORTCUTS = {"n": "_shortcut_new_game", "a": "_toggle_notes", "d": "_give_hint",
+    def _on_hover_leave(self, event):
+        if self.hover_cell is not None:
+            self.hover_cell = None
+            self._draw_board()
+
+    # Teclas de atalho para os botões de ação
+    SHORTCUTS = {"n": "_shortcut_new_game", "a": "_toggle_notes_mode", "d": "_toggle_hint_mode",
                  "r": "_restart", "s": "_solve_now"}
 
     def _on_key(self, event):
@@ -304,51 +323,46 @@ class SudokuGUI:
             return
         if event.keysym in ("BackSpace", "Delete"):
             self._select_number(0)
-            return
-
-        if not self.selected:
-            return
-        r, c = self.selected
-        if event.keysym in ("Up", "Down", "Left", "Right"):
-            dr, dc = {"Up": (-1, 0), "Down": (1, 0), "Left": (0, -1), "Right": (0, 1)}[event.keysym]
-            nr, nc = max(0, min(8, r + dr)), max(0, min(8, c + dc))
-            self.selected = (nr, nc)
-            self._draw_board()
 
     def _shortcut_new_game(self):
         self.new_game(self.diff_var.get())
 
     def _select_number(self, n):
-        """Marca 'n' como o número pendente e o destaca no tabuleiro.
-        Nada é escrito até o usuário clicar numa célula."""
+        """Marca 'n' como o número pendente e o destaca no tabuleiro
+        (nos modos Escrever/Anotação). Fica armado até o usuário escolher
+        outro número ou Apagar."""
         self.pending_number = n
-        self.selected = None # para de-selecione a celula
         self._draw_board()
 
-    def _apply_pending_at(self, r, c):
-        """Aplica o número pendente na célula (r, c): valor ou anotação,
-        dependendo do modo Anotações estar ativo no momento do clique."""
-        n = self.pending_number
-        if n is None:
-            return
+    # ---------------- Ações por célula (uma por modo) ----------------
+    def _write_value_at(self, r, c, n):
+        prev = self.user_board[r][c]
+        self.user_board[r][c] = n
+        if n != 0:
+            self.notes.pop((r, c), None)
+            self._clear_peer_notes(r, c, n)
+            if n != self.solution[r][c] and prev != n:
+                self.mistakes += 1
+                self.mistakes_label.config(text=f"Erros: {self.mistakes}")
+        self._check_win_silent()
 
-        if self.notes_mode and n != 0:
-            cand = self.notes.setdefault((r, c), set())
-            if n in cand:
-                cand.discard(n)
-            else:
-                cand.add(n)
+    def _toggle_note_at(self, r, c, n):
+        cand = self.notes.setdefault((r, c), set())
+        if n in cand:
+            cand.discard(n)
         else:
-            prev = self.user_board[r][c]
-            self.user_board[r][c] = n
-            if n != 0:
-                self.notes.pop((r, c), None)
-                self._clear_peer_notes(r, c, n)
-                if n != self.solution[r][c] and prev != n:
-                    self.mistakes += 1
-                    self.mistakes_label.config(text=f"Erros: {self.mistakes}")
+            cand.add(n)
+        if not cand:
+            self.notes.pop((r, c), None)
 
-        # self.pending_number = None -- deve continuar com o mesmo numero "ativo" mesmo depois de escrever em uma celula
+    def _apply_hint_at(self, r, c):
+        if self.user_board[r][c] == self.solution[r][c]:
+            return  # já está correta, nada a fazer
+        self.user_board[r][c] = self.solution[r][c]
+        self.notes.pop((r, c), None)
+        self._clear_peer_notes(r, c, self.solution[r][c])
+        self.hints_used += 1
+        self.hints_label.config(text=f"Dicas: {self.hints_used}")
         self._check_win_silent()
 
     def _clear_peer_notes(self, r, c, n):
@@ -370,32 +384,30 @@ class SudokuGUI:
                 if not cand:
                     self.notes.pop(pos, None)
 
-    def _toggle_notes(self):
-        self.notes_mode = not self.notes_mode
-        self.notes_btn.config(text=f"Anotações: {'ON' if self.notes_mode else 'OFF'} (A)",
-                               bg=("#059669" if self.notes_mode else BTN_COLOR))
-
-    def _give_hint(self):
-        if not self.selected:
-            messagebox.showinfo("Dica", "Selecione uma célula vazia primeiro.")
-            return
-        r, c = self.selected
-        if self.given_mask[r][c] or self.user_board[r][c] == self.solution[r][c]:
-            messagebox.showinfo("Dica", "Selecione uma célula vazia ou incorreta.")
-            return
-        self.user_board[r][c] = self.solution[r][c]
-        self.notes.pop((r, c), None)
-        self._clear_peer_notes(r, c, self.solution[r][c])
-        self.pending_number = None
-        self.hints_used += 1
-        self.hints_label.config(text=f"Dicas: {self.hints_used}")
+    # ---------------- Modos (Anotação / Dica) ----------------
+    def _toggle_notes_mode(self):
+        self.mode = MODE_WRITE if self.mode == MODE_NOTES else MODE_NOTES
+        self._refresh_mode_buttons()
         self._draw_board()
-        self._check_win_silent()
+
+    def _toggle_hint_mode(self):
+        self.mode = MODE_WRITE if self.mode == MODE_HINT else MODE_HINT
+        self._refresh_mode_buttons()
+        self._draw_board()
+
+    def _refresh_mode_buttons(self):
+        notes_on = self.mode == MODE_NOTES
+        hint_on = self.mode == MODE_HINT
+        self.notes_btn.config(text=f"Anotações: {'ON' if notes_on else 'OFF'} (A)",
+                               bg=(MODE_ON_COLOR if notes_on else BTN_COLOR))
+        self.hint_btn.config(text=f"Dica: {'ON' if hint_on else 'OFF'} (D)",
+                              bg=(MODE_ON_COLOR if hint_on else BTN_COLOR))
 
     def _restart(self):
         if messagebox.askyesno("Reiniciar", "Isso vai apagar tudo e recomeçar o mesmo jogo. Deseja continuar?"):
             self.user_board = [row[:] for row in self.puzzle]
             self.notes = {}
+            self.pending_number = None
             self._draw_board()
 
     def _solve_now(self):
@@ -403,6 +415,8 @@ class SudokuGUI:
             self.user_board = [row[:] for row in self.solution]
             self.notes = {}
             self.pending_number = None
+            self.mode = MODE_WRITE
+            self._refresh_mode_buttons()
             self.timer_running = False
             self._draw_board()
 
@@ -415,7 +429,6 @@ class SudokuGUI:
         self.timer_running = False
         elapsed = int(time.time() - self.start_time)
         m, s = divmod(elapsed, 60)
-        self._draw_board()
         messagebox.showinfo("Parabéns!",
                              f"Você completou o Sudoku em {m:02d}:{s:02d}\n"
                              f"Erros: {self.mistakes} | Dicas usadas: {self.hints_used}")
