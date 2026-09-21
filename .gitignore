@@ -1,2 +1,6 @@
 sudoku_gui.py.bak
 /__pycache__
+build/Sudoku/Analysis-00.toc
+/build
+/dist
+Sudoku.spec
