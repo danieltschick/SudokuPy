@@ -51,6 +51,7 @@ class SudokuGUI:
         self.notes = {}  # (r,c) -> set de números candidatos
         self.mode = MODE_WRITE
         self.pending_number = None  # número "armado" (usado nos modos Escrever/Anotação)
+        self.history = []  # snapshots (tabuleiro, anotações) para o botão Voltar
         self.hover_cell = None  # (r, c) sob o cursor, para o destaque de linha/coluna/quadrante
         self.start_time = None
         self.timer_running = False
@@ -154,6 +155,7 @@ class SudokuGUI:
         self.notes_btn.pack(fill="x", pady=3)
         self.hint_btn = make_btn(controls, "Dica: OFF (D)", self._toggle_hint_mode)
         self.hint_btn.pack(fill="x", pady=3)
+        make_btn(controls, "Voltar (V)", self._undo).pack(fill="x", pady=3)
         make_btn(controls, "Reiniciar (R)", self._restart).pack(fill="x", pady=3)
         make_btn(controls, "Solução (S)", self._solve_now).pack(fill="x", pady=3)
 
@@ -188,6 +190,7 @@ class SudokuGUI:
         self.given_mask = [[self.puzzle[r][c] != 0 for c in range(9)] for r in range(9)]
         self.user_board = [row[:] for row in self.puzzle]
         self.notes = {}
+        self.history = []
         self.pending_number = None
         self.mode = MODE_WRITE
         self._refresh_mode_buttons()
@@ -310,10 +313,13 @@ class SudokuGUI:
 
     # Teclas de atalho para os botões de ação
     SHORTCUTS = {"n": "_shortcut_new_game", "a": "_toggle_notes_mode", "d": "_toggle_hint_mode",
-                 "r": "_restart", "s": "_solve_now"}
+                 "r": "_restart", "s": "_solve_now", "v": "_undo"}
 
     def _on_key(self, event):
         key = event.keysym.lower()
+        if key == "z" and (event.state & 0x4):  # Ctrl+Z
+            self._undo()
+            return
         if key in self.SHORTCUTS:
             getattr(self, self.SHORTCUTS[key])()
             return
@@ -334,9 +340,26 @@ class SudokuGUI:
         self.pending_number = n
         self._draw_board()
 
+    # ---------------- Histórico (Voltar) ----------------
+    def _push_history(self):
+        """Guarda o estado atual (tabuleiro + anotações) antes de uma jogada."""
+        self.history.append(([row[:] for row in self.user_board],
+                             {pos: set(cand) for pos, cand in self.notes.items()}))
+
+    def _undo(self):
+        """Volta ao estado anterior à última jogada (valores e anotações).
+        Os contadores de erros e dicas não são revertidos."""
+        if not self.history:
+            return
+        self.user_board, self.notes = self.history.pop()
+        self._draw_board()
+
     # ---------------- Ações por célula (uma por modo) ----------------
     def _write_value_at(self, r, c, n):
         prev = self.user_board[r][c]
+        if prev == n:
+            return  # nada muda (ex.: apagar célula já vazia)
+        self._push_history()
         self.user_board[r][c] = n
         if n != 0:
             self.notes.pop((r, c), None)
@@ -347,6 +370,7 @@ class SudokuGUI:
         self._check_win_silent()
 
     def _toggle_note_at(self, r, c, n):
+        self._push_history()
         cand = self.notes.setdefault((r, c), set())
         if n in cand:
             cand.discard(n)
@@ -358,6 +382,7 @@ class SudokuGUI:
     def _apply_hint_at(self, r, c):
         if self.user_board[r][c] == self.solution[r][c]:
             return  # já está correta, nada a fazer
+        self._push_history()
         self.user_board[r][c] = self.solution[r][c]
         self.notes.pop((r, c), None)
         self._clear_peer_notes(r, c, self.solution[r][c])
@@ -407,6 +432,7 @@ class SudokuGUI:
         if messagebox.askyesno("Reiniciar", "Isso vai apagar tudo e recomeçar o mesmo jogo. Deseja continuar?"):
             self.user_board = [row[:] for row in self.puzzle]
             self.notes = {}
+            self.history = []
             self.pending_number = None
             self._draw_board()
 
@@ -414,6 +440,7 @@ class SudokuGUI:
         if messagebox.askyesno("Resolver", "Isso vai preencher a solução completa. Deseja continuar?"):
             self.user_board = [row[:] for row in self.solution]
             self.notes = {}
+            self.history = []
             self.pending_number = None
             self.mode = MODE_WRITE
             self._refresh_mode_buttons()
@@ -427,6 +454,7 @@ class SudokuGUI:
 
     def _on_win(self):
         self.timer_running = False
+        self.history = []
         elapsed = int(time.time() - self.start_time)
         m, s = divmod(elapsed, 60)
         messagebox.showinfo("Parabéns!",
